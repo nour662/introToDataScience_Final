@@ -84,6 +84,11 @@ nb_predict <- predict(nb_classifier, newdata = testing_set)
 # evaluate using Confusion Matrix
 CrossTable(nb_predict, test_set$t_cap_bin,prop.chisq = FALSE, prop.t = FALSE, prop.r = FALSE, dnn = c('predicted', 'actual'))
 
+#Create a 2nd classifier to run the NB with a laplace estimator. Use this classifier to predict on testing set. Run a confusion matrix to evaluate accuracy.
+nb_classifer2 <- naiveBayes(training_set[,-1],training_set$t_cap_bin,laplace = 1)
+nb_predict2 <- predict(nb_classifer2, newdata= test_set)
+CrossTable(nb_predict2, test_set$t_cap_bin,prop.chisq = FALSE, prop.t = FALSE, prop.r = FALSE, dnn = c('predicted', 'actual'))
+
 ### Question 3: Decision Trees and Random Forests ############
 
 # Reading in dataset
