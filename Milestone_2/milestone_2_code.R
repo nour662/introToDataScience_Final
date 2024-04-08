@@ -10,47 +10,37 @@ library(glmnet)
 library(gmodels)
 library(e1071)
 
-### Question #2: Log Regression and Naive Bayes ###
-
 #Import dataset and create a subset that removes NA cases
 dataset <- read.csv("cleaned_datset.csv")
 complete_data <- complete.cases(dataset)
 data_subset <- dataset[complete_data,]
 
-#Create a clean data frame with the main variables and standardize
+#Create a clean data frame with the main variables
 clean_subset <- data_subset[,c("t_cap", "t_hh","t_rd","t_rsa","t_ttlh")]
-standard <- scale(clean_subset)
-
-#Regularization Code
-#Create training and testing sets
-testidx <- which(1:nrow(standard)%%4==0)
-data_train <- standard[-testidx,]
-data_test <- standard[testidx,]
-
-#Run ridge regression, plot and check coefficients
-cv.fit <- cv.glmnet(as.matrix(data_train[,c(-1)]),as.vector(data_train[,1]),alpha=0)
-plot(cv.fit)
-coef(cv.fit)
-
-##Check for minimum lambda value
-cv.fit$lambda.min
-
-#Compare correlation between regularized model and actual testing set
-prediction <- predict(cv.fit,newx = as.matrix(data_test[,c(-1)]))
-cor(prediction,as.vector(data_test[,1]))
-
-#Log Regression Code
 #Convert the dependent variable into a categorical → above >1700 is a high performing 1, <1700 is not 0
 clean_subset$t_cap_bin <- ifelse(clean_subset$t_cap > 1700, 1,0)
+#Standardize dataset
+standard <- scale(clean_subset)
 
 #Randomize and create training (75%) and testing (25%) sets
 set.seed(123)
 split <- sample.split(clean_subset$t_cap_bin, SplitRatio <- 0.75)
 training_set <- subset(clean_subset, split ==TRUE)
 test_set <- subset(clean_subset, split ==FALSE)
+#Standardize training dataset
+stand <- scale(training_set[, -which(names(training_set) == "t_cap_bin")])
 
-# Build log regression model excluding the original column with numerical values for the dependent variable
+#Run Lasso (alpha =1) regression to minimize multicollinearity and extract coefficients
+cv_fit <- cv.glmnet(as.matrix(stand), training_set$t_cap_bin, alpha = 1)
+min_l <- cv_fit$lambda.min
+lasso_coef <- coef(cv_fit, s=min_l)[-1] 
+
+#Build log regression model using training set
 classifier <- glm(t_cap_bin~.-t_cap, family = binomial,data =training_set)
+#Extract original coefficients from log model
+log_coef <- coef(classifier)
+#Replace original coeffs with Lasso coefficients to instantiate
+classifier$coefficients <- c(log_coef[1], lasso_coef)
 
 #Check statistical significance
 summary(classifier)
