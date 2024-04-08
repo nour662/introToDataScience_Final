@@ -7,10 +7,12 @@ library(tidyverse)
 library(caret)
 library(ISLR)
 
-library(ggplot2)
 library(gridExtra)
-library(rpart)
 library(png)
+
+library(C50)
+library(randomForest)
+library(gbm)
 
 library(caTools)
 library(car)
@@ -708,8 +710,21 @@ CrossTable(nb_predict2, test_set$t_cap_bin,prop.chisq = FALSE, prop.t = FALSE, p
 ## Section 3:Decision Trees and Random Forests
 #####################################################
 
-# Reading in dataset
+# Read the dataset
 data <- read.csv("datasets/cleaned_dataset.csv")
+
+# Remove rows with missing values
+data <- na.omit(data)
+
+# Select relevant columns
+data <- data[, c("t_cap", "t_hh", "t_rd", "t_rsa", "t_ttlh")]
+
+# Convert t_cap to categories
+data <- data %>%
+  mutate(t_cap_category = cut(t_cap, breaks = c(-Inf, 1500, 1800, Inf), labels = c("low", "medium", "high")))
+
+# Define proportion for training data
+train_proportion <- 0.7
 
 # Generate random indices to shuffle the dataset
 set.seed(123)  # for reproducibility
@@ -718,47 +733,112 @@ random_indices <- sample(nrow(data))
 # Shuffle the dataset
 shuffled_data <- data[random_indices, ]
 
-train_proportion <- 0.8  # 80% for training, 20% for testing
-
-# Calculate the number of samples for training and testing
-num_train_samples <- round(train_proportion * nrow(shuffled_data))
-num_test_samples <- nrow(shuffled_data) - num_train_samples
-
 # Split the shuffled dataset into training and testing sets
-train_data <- shuffled_data[1:num_train_samples, ]
-test_data <- shuffled_data[(num_train_samples + 1):nrow(shuffled_data), ]
+train_data <- shuffled_data[1:round(train_proportion * nrow(shuffled_data)), ]
+test_data <- shuffled_data[(round(train_proportion * nrow(shuffled_data)) + 1):nrow(shuffled_data), ]
 
-# Define a function to plot histograms and density plots
-plot_distribution <- function(data, title) {
-  ggplot(data, aes(x = t_cap)) +
-    geom_histogram(fill = "blue", color = "black", bins = 20) +
-    labs(title = title, x = "Turbine Capacity", y = "Frequency")
-}
+## Part A: Show that the distribution after the split is similar to the original.
+# Visualize distributions
+original_plot <- ggplot(data, aes(x = t_cap)) +
+  geom_histogram(fill = "blue", color = "black", bins = 20) +
+  labs(title = "Distribution of Original Dataset", x = "Turbine Capacity (kW)", y = "Frequency")
 
-# Plot density plots for the original dataset, training set, and testing set
-original_plot <- plot_distribution(data, "Distribution of Original Dataset")
-training_plot <- plot_distribution(train_data, "Distribution of Training Set")
-testing_plot <- plot_distribution(test_data, "Distribution of Testing Set")
+train_plot <- ggplot(train_data, aes(x = t_cap)) +
+  geom_histogram(fill = "blue", color = "black", bins = 20) +
+  labs(title = "Distribution of Training Set", x = "Turbine Capacity (kW)", y = "Frequency")
+
+test_plot <- ggplot(test_data, aes(x = t_cap)) +
+  geom_histogram(fill = "blue", color = "black", bins = 20) +
+  labs(title = "Distribution of Testing Set", x = "Turbine Capacity (kW)", y = "Frequency")
 
 # Combine the plots
-png(filename = "generated_graphs/training_testing_distributions_dt.png", width = 800, height = 600) ## Saving png
-grid.arrange(original_plot, training_plot, testing_plot,
-             ncol = 3)
+png(filename = "generated_graphs/distribution_plots.png", width = 800, height = 600)
+grid.arrange(original_plot, train_plot, test_plot, ncol = 3)
 dev.off()
-# Check the distribution of the training and testing sets
+
 summary(train_data)
 summary(test_data)
+summary(data)
 
-# Train Regression tree
-r_tree_model <- rpart(t_cap ~ t_hh + t_rd + t_rsa + t_ttlh , data = train_data)  # Assuming t_cap is continuous, no need to specify method
+## Part B: Train a decision tree
+# Build the C5.0 model
+model <- C5.0(train_data[, c("t_hh", "t_rd", "t_rsa", "t_ttlh")], train_data$t_cap_category)
+summary(model)
 
-# Print decision tree rules
-print(r_tree_model)
 
-# Visualize decision tree
-plot(r_tree_model)
-text(r_tree_model)
+# Plot and save the decision tree
+png("generated_graphs/decision_tree.png", width = 800, height = 600)
+plot(model)
+dev.off()
 
-## add code for boosting 
-## add decision tree
+
+# Confusion matrix for the training set
+train_predict <- predict(model, train_data)
+train_confusion <- CrossTable(train_data$t_cap_category, train_predict, prop.chisq = FALSE, prop.c = FALSE, prop.r = FALSE,
+                              dnn = c('actual', 'predicted'))
+train_accuracy <- mean(train_predict == train_data$t_cap_category) * 100
+
+# Confusion matrix for the testing set
+test_predict <- predict(model, test_data)
+test_confusion <- CrossTable(test_data$t_cap_category, test_predict, prop.chisq = FALSE, prop.c = FALSE, prop.r = FALSE,
+                             dnn = c('actual', 'predicted'))
+test_accuracy <- mean(test_predict == test_data$t_cap_category) * 100
+
+cat("Decision Tree Training Accuracy:", train_accuracy, "%\n")
+cat("Decision Tree Testing Accuracy:", test_accuracy, "%\n")
+
+## Part C: Apply boosting with different numbers of trees
+
+# Train boosting models with different numbers of trees
+boost_model_10trees <- gbm(train_data$t_cap_category ~ ., data = train_data[, c("t_hh", "t_rd", "t_rsa", "t_ttlh")], n.trees = 10, distribution = "multinomial")
+boost_model_50trees <- gbm(train_data$t_cap_category ~ ., data = train_data[, c("t_hh", "t_rd", "t_rsa", "t_ttlh")], n.trees = 50, distribution = "multinomial")
+
+# Make predictions on the test set
+boost_pred_10trees <- predict(boost_model_10trees, newdata = test_data[, c("t_hh", "t_rd", "t_rsa", "t_ttlh")], n.trees = 10)
+boost_pred_50trees <- predict(boost_model_50trees, newdata = test_data[, c("t_hh", "t_rd", "t_rsa", "t_ttlh")], n.trees = 50)
+
+# Convert predicted probabilities to class labels
+boost_pred_10trees_class <- colnames(boost_pred_10trees)[apply(boost_pred_10trees, 1, which.max)]
+boost_pred_50trees_class <- colnames(boost_pred_50trees)[apply(boost_pred_50trees, 1, which.max)]
+
+# Calculate accuracy
+boost_accuracy_10trees <- mean(boost_pred_10trees_class == test_data$t_cap_category) * 100
+boost_accuracy_50trees <- mean(boost_pred_50trees_class == test_data$t_cap_category) * 100
+
+cat("Boosting Accuracy (10 trees):", boost_accuracy_10trees, "%\n")
+cat("Boosting Accuracy (50 trees):", boost_accuracy_50trees, "%\n")
+
+## Part D: Train bagging and random forests with different numbers of trees
+
+## Bagging
+bagging_accuracy <- numeric()
+for (i in c(10, 50, 100, 500)) {
+  bagging_model <- randomForest(train_data$t_cap_category ~ ., data = train_data[, c("t_hh", "t_rd", "t_rsa", "t_ttlh")], ntree = i)
+  bagging_predict <- predict(bagging_model, newdata = test_data[, c("t_hh", "t_rd", "t_rsa", "t_ttlh")])
+  bagging_accuracy[i] <- mean(bagging_predict == test_data$t_cap_category) * 100
+  cat("Bagging Accuracy (", i, "trees): ", bagging_accuracy[i], "%\n")
+}
+
+# Random Forest
+rf_accuracy <- numeric()
+for (i in c(10, 50, 100, 500)) {
+  rf_model <- randomForest(train_data$t_cap_category ~ ., data = train_data[, c("t_hh", "t_rd", "t_rsa", "t_ttlh")], ntree = i)
+  rf_predict <- predict(rf_model, newdata = test_data[, c("t_hh", "t_rd", "t_rsa", "t_ttlh")])
+  rf_accuracy[i] <- mean(rf_predict == test_data$t_cap_category) * 100
+  cat("Random Forest Accuracy (", i, "trees): ", rf_accuracy[i], "%\n")
+}
+
+# Identify most important features in each random forest and save plots
+for (i in c(10, 50, 100, 500)) {
+  rf_model <- randomForest(train_data$t_cap_category ~ ., data = train_data[, c("t_hh", "t_rd", "t_rsa", "t_ttlh")], ntree = i)
+  cat("Random Forest with", i, "trees: \n")
+  plot_title <- paste("Variable Importance Plot (", i, " trees)")
+  varImpPlot(rf_model, main = plot_title)
+  png(filename = paste("generated_graphs/random_forest_", i, "_trees.png", sep = ""), width = 800, height = 600)
+  varImpPlot(rf_model, main = plot_title)
+  dev.off()
+}
+
+
+
 
