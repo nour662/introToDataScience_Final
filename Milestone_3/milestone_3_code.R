@@ -4,7 +4,7 @@ library(ggplot2)
 library(kernlab)
 library(caret)
 library(randomForest)
-
+library(neuralnet)
 library(NbClust)
 library(factoextra)
 library(cluster)
@@ -108,6 +108,92 @@ cor(capacity_predict_poly, test_set$t_cap)
 ########################################################
 # Section 2: Neural Networks
 #######################################################
+
+# Import dataset
+dataset <- read.csv("datasets/cleaned_dataset.csv")
+
+# Subset the dataset
+subset <- dataset[, c("t_cap", "t_hh", "t_rd", "t_rsa", "t_ttlh")]
+subset <- na.omit(subset)
+
+# Normalize input variables to [0-1] range
+normalize <- function(x) {
+  (x - min(x, na.rm = TRUE)) / (max(x, na.rm = TRUE) - min(x, na.rm = TRUE))
+}
+subset_normalized <- subset %>% mutate(across(where(is.numeric), normalize))
+
+subset_normalized <- subset_normalized %>% 
+  sample_frac(size = 0.2, replace = FALSE) 
+
+# Define proportion for training data
+train_proportion <- 0.7
+
+# Generate random indices to shuffle the dataset
+set.seed(123)  # for reproducibility
+random_indices <- sample(nrow(subset_normalized))
+
+# Shuffle the dataset
+shuffled_data <- subset_normalized[random_indices, ]
+
+# Split the shuffled dataset into training and testing sets
+train_data <- shuffled_data[1:round(train_proportion * nrow(shuffled_data)), ]
+test_data <- shuffled_data[(round(train_proportion * nrow(shuffled_data)) + 1):nrow(shuffled_data), ]
+
+# Define the number of hidden layers to iterate over
+hidden_layers <- c(1, 5, 10)
+
+# Open a text file to save the results
+sink("generated_results/neuralnet_results.txt")
+
+# Iterate over different numbers of hidden layers
+for (hl in hidden_layers) {
+  cat("Number of Hidden Layers:", hl, "\n")
+  
+  # Define neural network model
+  nn_model <- neuralnet(
+    formula = t_cap ~ t_hh + t_rd + t_rsa + t_ttlh,
+    data = train_data,
+    hidden = hl, 
+    stepmax = 1e6
+  )
+  
+  # Check if weights were calculated
+  if (!is.null(nn_model$weights)) {
+    # Visualize Network Topology and save plot as file
+    png(filename = paste0("generated_graphs/neuralnet_plot_hidden_", hl, ".png"), width = 800, height = 600)
+    plot(nn_model)
+    dev.off()
+    
+    # Make predictions on testing data
+    predictions <- predict(nn_model, as.matrix(test_data[, c("t_hh", "t_rd", "t_rsa", "t_ttlh")]))
+    
+    # Compute correlation between predicted and actual capacity
+    correlation <- cor(predictions, test_data$t_cap)
+    
+    # Calculate Mean Squared Error (MSE)
+    mse <- mean((predictions - test_data$t_cap)^2)
+    
+    # Calculate Root Mean Squared Error (RMSE)
+    rmse <- sqrt(mse)
+    
+    # Calculate Mean Absolute Error (MAE)
+    mae <- mean(abs(predictions - test_data$t_cap))
+    
+    # Print the metrics
+    cat("Mean Squared Error (MSE):", mse, "\n")
+    cat("Root Mean Squared Error (RMSE):", rmse, "\n")
+    cat("Mean Absolute Error (MAE):", mae, "\n")
+    cat("Correlation:", correlation, "\n\n")
+  } else {
+    cat("Weights were not calculated for", hl, "hidden layers.\n\n")
+  }
+}
+# Close the text file
+sink()
+
+
+
+
 
 #####################################################
 ## Section 3: Clustering
