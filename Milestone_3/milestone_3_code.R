@@ -5,6 +5,17 @@ library(kernlab)
 library(caret)
 library(randomForest)
 
+library(NbClust)
+library(factoextra)
+library(cluster)
+library(dbscan)
+library(FNN)
+library(caTools)
+library(corrplot)
+library(glmnet)
+library(gmodels)
+library(e1071)
+
 ########################################################
 
 #Import dataset and create a subset that removes NA cases
@@ -99,7 +110,51 @@ cor(capacity_predict_poly, test_set$t_cap)
 #######################################################
 
 #####################################################
-## Section 3: 
+## Section 3: Clustering
+#####################################################
+##Setup data (read, clean, subset key variables)
+cleaned_dataset <- dataset[complete.cases(dataset[, c("t_cap", "t_hh", "t_rd", "t_rsa", "t_ttlh")]), ]
+pdata <- cleaned_dataset[,c("t_cap", "t_hh", "t_rd", "t_rsa", "t_ttlh")]
+
+#K-means Clustering
+#Set random seed
+set.seed(123)
+#Create a subset dataframe of 1000 rows
+subset <- pdata[sample(nrow(pdata), 1000), ]
+#Standardize subset
+standard <- scale(subset)
+#Determine optimal number of clusters using Elbow method
+fviz_nbclust(standard, kmeans, method = "wss")
+#Run k means based on optimal k value and plot
+k2 <- kmeans(standard, centers = 3, nstart = 100)
+fviz_cluster(k2, data=standard)
+#Analyze clusters by creating a table of each clusters summary stats
+cluster1_data <- standard[k2$cluster == 1, ]
+cluster2_data <- standard[k2$cluster == 2, ]
+cluster3_data <- standard[k2$cluster == 3, ]
+cluster_summary <- lapply(list(cluster1_data, cluster2_data, cluster3_data), function(cluster_data) {summary(cluster_data)})
+
+#Hierarchical Clustering
+#Calculate the euclidean distance between each row (dissimilarity matrix)
+d <- dist(standard, method = "euclidean")
+#Cluster using distances (complete linkage) and plot
+hc1 <- hclust(d, method = "complete")
+plot(hc1, cex = 0.6, hang = -1)
+#Analyze clusters
+h.clusters <- cutree(hc1, k = 5)
+data_with_clusters <- cbind(standard, Cluster = h.clusters)
+cluster_summary <- aggregate(cbind(t_cap, t_hh, t_rd, t_rsa, t_ttlh) ~ Cluster, data = data_with_clusters, FUN = summary)
+#Count no. of turbines in each cluster
+cluster_counts <- table(data_with_clusters[, "Cluster"])
+
+##Density-Based Clustering
+#Determine optimal epsilon value by generating a k distance plot
+dbscan::kNNdistplot(standard,k=8)
+#Evaluate plot to determine optimal epsilon value; run dbscan function to cluster original dataset based on optimal epsilon value 
+db <- dbscan(standard, eps = 0.50, minPts = 8)
+#Plot clusters
+fviz_cluster(db, data = standard)
+
 #####################################################
 ## Section 4: Comparative Analysis 
 #####################################################
@@ -196,4 +251,91 @@ bwplot(results_BT)
 
 # dot plots of results
 dotplot(results_BT)
-############################################################
+
+#####################################################
+## Section 5: Feature Selection
+#####################################################
+
+# 1. Linear Regression - Filtering
+
+## Original model for t_hh from Milestone 2
+#Conduct linear regression considering t-hh as independent variable and t-cap as dependent variable.
+#Set a seed
+set.seed(1)
+
+# Randomly divide the data into training and testing sets
+# Calculate indices for the training set, capturing 75% of the data
+split <- sample.split(pdata, SplitRatio <- 0.75)
+training_set <- subset(pdata, split ==TRUE)
+test_set <- subset(pdata, split ==FALSE)
+
+# Create the training dataset using the selected indices
+tmp_train <- pdata[training_set,]
+
+# Create the testing dataset using the remaining indices
+tmp_test <- pdata[-training_set,]
+
+# Conduct regression analysis
+model1.lm <- lm(t_cap~ t_hh + t_rd + t_rsa + t_ttlh , data =tmp_train )
+summary(model1.lm)
+
+#let's predict the t_cap by using the test data for the model, set as data frame
+m1_predict <- predict (model1.lm, newdata=tmp_test)
+m1_predict <- as.data.frame(m1_predict)
+
+#Configure the predict output to match the testing set for comparison
+colnames(m1_predict) <- "t_cap"
+m1_predict_subset <- m1_predict[1:nrow(tmp_test), ]
+
+# calculate the correlation between the predicted and real values 
+#Check for the correlation with actual result for t_hh
+cor_thh <- cor(m1_predict_subset, tmp_test$t_cap)
+cor_thh
+
+## Applying filtering for t_hh linear regression model
+#Plot correlation matrix
+corrV <- cor(training_set)
+corrplot(corrV, method="number", is.corr=FALSE)
+
+#Remove t_hh as weakest variable
+model2 <- update(model1.lm, ~.-thh) 
+summary(model2)
+
+# 2. Logistic Regression - Lasso Regularization
+
+#Convert the dependent variable into a categorical → above >1700 is a high performing 1, <1700 is not 0
+pdata$t_cap_bin <- ifelse(pdata$t_cap > 1700, 1,0)
+#Standardize dataset
+standard <- scale(pdata)
+#Create training and testing sets
+split1 <- sample.split(pdata$t_cap_bin, SplitRatio <- 0.75)
+training_set1 <- subset(pdata, split1 ==TRUE)
+test_set1 <- subset(pdata, split1 ==FALSE)
+#Build regression model and print summary stats
+log_reg <- glm(t_cap_bin ~ ., family = binomial, data = training_set)
+summary(log_reg)
+
+#Build regression model with lasso regularization and print summary stats
+x <- as.matrix(training_set[, !names(training_set) %in% "t_cap_bin"])
+lasso_model <- glmnet(x, training_set$t_cap_bin, family = "binomial", alpha = 1)
+summary(lasso_model)
+
+# 3. Naive Bayes - Wrapper Method
+#Randomize and create training (75%) and testing (25%) sets
+set.seed(123)
+split <- sample.split(pdata$t_cap_bin, SplitRatio <- 0.75)
+training_set <- subset(pdata, split ==TRUE)
+test_set <- subset(pdata, split ==FALSE)
+#Standardize training dataset
+stand <- scale(training_set[, -which(names(training_set) == "t_cap_bin")])
+#Run wrapper on original Naive Bayes model from Milestone 2 using the train() function
+nb_model <- train(t_cap_bin ~ ., 
+                  +                   data = training_set, 
+                  +                   method = "nb", 
+                  +                   trControl = trainControl(method = "cv", number = 10))
+#Predict on new NB Model using testing set
+predictions <- predict(nb_model, newdata = test_set)
+#Print confusion matrix to evaluate accuracy
+confusionMatrix(predictions, test_set$t_cap_bin)
+#########################################################
+
